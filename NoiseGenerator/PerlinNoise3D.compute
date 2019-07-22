@@ -1,0 +1,129 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel Noise3D
+#pragma kernel standard 
+#pragma kernel turbulence 
+#pragma kernel ridge 
+
+
+RWStructuredBuffer<float> Result;
+float TextureSize;
+float NoiseScale;
+
+int _Octaves;
+float _Lacunarity;
+float _Gain;
+float _Amplitude;
+float _Frequency;
+
+
+float mix(float a, float b, float t) {
+    return b*t + a*(1 - t);
+}
+
+
+float3 random3(float3 p) {
+    p = float3(dot(p, float3(127.1, 311.7, 74.7)),
+        dot(p, float3(269.5, 183.3, 246.1)),
+        dot(p, float3(13.5, 71.9, 24.6)));
+    return -1.0 + 2.0 * frac(sin(p)*43.5453123);
+}
+
+int3 warp3(int3 n,uint period){
+     n++;
+     return period > 0 ? n % period : n;
+}
+
+float perlinNoise3D(float3 uv,uint period) {
+    uv%=period;
+    float3 i = floor(uv);
+    float3 f = frac(uv);
+    
+    float value0 = dot(random3(warp3(i + float3(0, 0, 0),period)), f - float3(0, 0, 0));
+    float value1 = dot(random3(warp3(i + float3(1, 0, 0),period)), f - float3(1, 0, 0));
+    float value2 = dot(random3(warp3(i + float3(0, 1, 0),period)), f - float3(0, 1, 0));
+    float value3 = dot(random3(warp3(i + float3(1, 1, 0),period)), f - float3(1, 1, 0));
+
+
+    float value4 = dot(random3(warp3(i + float3(0, 0, 1),period)), f - float3(0, 0, 1));
+    float value5 = dot(random3(warp3(i + float3(1, 0, 1),period)), f - float3(1, 0, 1));
+    float value6 = dot(random3(warp3(i + float3(0, 1, 1),period)), f - float3(0, 1, 1));
+    float value7 = dot(random3(warp3(i + float3(1, 1, 1),period)), f - float3(1, 1, 1));
+
+    float3 u = f*f*(3.0 - 2.0*f);
+    //插值
+    float mix1= mix(mix(value0, value1,u.x), mix(value2, value3, u.x), u.y);
+    float mix2= mix(mix(value4, value5, u.x), mix(value6, value7, u.x), u.y);
+    return mix(mix1,mix2,u.z);
+}
+
+float fbm(float3 uv,uint period) {
+    float v;
+    for (int i = 0; i < _Octaves; i++) {
+        v += _Amplitude*(perlinNoise3D(_Frequency*uv,period)+1)*0.5;
+        _Frequency *= _Lacunarity;
+        _Amplitude *= _Gain;
+    }
+    return v;
+}
+float fbmTurbulence(float3 uv,uint period) {
+    float v;
+    for (int i = 0; i < _Octaves; i++) {
+        v += _Amplitude*abs(perlinNoise3D(_Frequency*uv,period));
+        _Frequency *= _Lacunarity;
+        _Amplitude *= _Gain;
+    }
+    return v;
+}
+float fbmRidge(float3 uv,uint period) {
+    float v;
+    float pre=1;
+    for (int i = 0; i < _Octaves; i++) {
+        float h = abs(perlinNoise3D(_Frequency*uv,period));
+        h = 0.9 - h;
+        h = h * h; 
+        v +=h*_Amplitude;
+        v +=h*pre*_Amplitude;
+        pre=h;
+        _Frequency *= _Lacunarity;
+        _Amplitude *= _Gain;
+    }
+    return v;
+}
+
+[numthreads(8,8,8)]
+void Noise3D (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y+TextureSize*TextureSize*id.z;
+    //这种方法，缩放只能是整型的了
+    uint period=(int)NoiseScale;
+    float3 uv=(id/TextureSize)*period;
+    float noise=(perlinNoise3D(uv,period)+1)*0.5;
+    Result[index]=noise;
+}
+
+[numthreads(8,8,8)]
+void standard (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y+TextureSize*TextureSize*id.z;
+    uint period=(int)NoiseScale;
+    float3 uv=(id/TextureSize)*period;
+    Result[index] = fbm(uv,period);
+}
+
+[numthreads(8,8,8)]
+void turbulence (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y+TextureSize*TextureSize*id.z;
+    uint period=(int)NoiseScale;
+    float3 uv=(id/TextureSize)*period;
+    Result[index] = fbmTurbulence(uv,period);
+}
+
+[numthreads(8,8,8)]
+void ridge (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y+TextureSize*TextureSize*id.z;
+    uint period=(int)NoiseScale;
+    float3 uv=(id/TextureSize)*period;
+    Result[index] = fbmRidge(uv,period);
+}

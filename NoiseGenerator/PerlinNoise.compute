@@ -1,0 +1,184 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+#pragma kernel standard 
+#pragma kernel turbulence 
+#pragma kernel ridge 
+
+#define PI 3.1415926
+
+RWStructuredBuffer<float> Result;
+float TextureSize;
+float NoiseScale;
+
+
+int _Octaves;
+float _Lacunarity;
+float _Gain;
+float _Amplitude;
+float _Frequency;
+
+float mix(float a, float b, float t) {
+    return b*t + a*(1 - t);
+}
+
+float4 random4(float4 p){
+    p = float4(dot(p, float4(127.1, 311.7, 74.7,35.7)),
+        dot(p, float4(269.5, 183.3, 246.1,67.2)),
+        dot(p, float4(113.5, 271.9, 124.6,157.1)),
+        dot(p, float4(173.5, 235.9, 351.6,335.4)));
+    return -1.0 + 2.0 * frac(sin(p)*43.5453123);
+}
+
+float perlinNoise4D(float4 uv) {
+    float4 i = floor(uv);
+    float4 f = frac(uv);
+    float4 u = f*f*(3.0 - 2.0*f);
+    //2^4 16个点。。。。。。 冷静冷静冷静
+    //先压缩至8个顶点 ->4->2->1
+    //点000->0001 0000
+    float value0000 = dot(random4(i + float4(0,0,0,0)), f - float4(0, 0, 0,0));
+    float value0001 = dot(random4(i + float4(0,0,0,1)), f - float4(0, 0, 0,1));
+    float v000=mix(value0000,value0001,u.w);
+    //点100
+    float value1000 = dot(random4(i + float4(1,0,0,0)), f - float4(1, 0, 0,0));
+    float value1001 = dot(random4(i + float4(1,0,0,1)), f - float4(1, 0, 0,1));
+    float v100=mix(value1000,value1001,u.w);
+    //010
+    float value0100 = dot(random4(i + float4(0,1,0,0)), f - float4(0, 1, 0,0));
+    float value0101 = dot(random4(i + float4(0,1,0,1)), f - float4(0, 1, 0,1));
+    float v010=mix(value0100,value0101,u.w);
+    //001
+    float value0010 = dot(random4(i + float4(0,0,1,0)), f - float4(0, 0, 1,0));
+    float value0011 = dot(random4(i + float4(0,0,1,1)), f - float4(0, 0, 1,1));
+    float v001=mix(value0010,value0011,u.w);
+    //110
+    float value1100 = dot(random4(i + float4(1,1,0,0)), f - float4(1, 1, 0,0));
+    float value1101 = dot(random4(i + float4(1,1,0,1)), f - float4(1, 1, 0,1));
+    float v110=mix(value1100,value1101,u.w);
+    //011
+    float value0110 = dot(random4(i + float4(0,1,1,0)), f - float4(0, 1, 1,0));
+    float value0111 = dot(random4(i + float4(0,1,1,1)), f - float4(0, 1, 1,1));
+    float v011=mix(value0110,value0111,u.w);
+    //101
+    float value1010 = dot(random4(i + float4(1,0,1,0)), f - float4(1, 0, 1,0));
+    float value1011 = dot(random4(i + float4(1,0,1,1)), f - float4(1, 0, 1,1));
+    float v101=mix(value1010,value1011,u.w);
+    //111
+    float value1110 = dot(random4(i + float4(1,1,1,0)), f - float4(1, 1, 1,0));
+    float value1111 = dot(random4(i + float4(1,1,1,1)), f - float4(1, 1, 1,1));
+    float v111=mix(value1110,value1111,u.w);
+    //压缩至4 00 01 10 11
+    float v0=mix(mix(v000,v001,u.z),mix(v010,v011,u.z),u.y);
+    float v1=mix(mix(v100,v101,u.z),mix(v110,v111,u.z),u.y);
+    return mix(v0,v1,u.x);
+}
+
+int warp(int n,uint period){
+     n++;
+     return period > 0 ? n % period : n;
+}
+
+float2 random(float2 x) {
+    float2 k = float2(0.3183099, 0.3678794);
+    x = x*k + k.yx;
+    return -1.0 + 2.0*frac(16.0 * k*frac(x.x*x.y*(x.x + x.y)));
+}
+
+float perlinNoise(float2 uv,uint period) {
+    uv%=period;
+    int2 i = floor(uv);
+    float2 f = frac(uv);
+    //为了直观 单独计算四个值
+    float value0 = dot(random(float2(warp(i.x,period),warp(i.y,period))), f - float2(0, 0));
+    float value1 = dot(random(float2(warp(i.x+1,period),warp(i.y,period))), f - float2(1, 0));
+    float value2 = dot(random(float2(warp(i.x,period),warp(i.y+1,period))), f - float2(0, 1));
+    float value3 = dot(random(float2(warp(i.x+1,period),warp(i.y+1,period))), f - float2(1, 1));
+
+    float2 u = f*f*(3.0 - 2.0*f);
+    //插值
+    return mix(mix(value0, value1,u.x), mix(value2, value3, u.x), u.y);
+}
+
+
+float SeamlessNoise(float2 uv, float2 scale) {
+    //xy->uv  dxdy->scale  xyoffset->Random seed
+    float s = uv.x;
+    float t = uv.y;
+    float xyOffset=1;
+    float nx = xyOffset + cos(s * 2.0f * PI) * scale.x / (2.0f * PI);
+    float ny = xyOffset + cos(t * 2.0f * PI) * scale.y / (2.0f * PI);
+    float nz = xyOffset + sin(s * 2.0f * PI) * scale.x / (2.0f * PI);
+    float nw = xyOffset + sin(t * 2.0f * PI) * scale.y / (2.0f * PI);
+
+    return perlinNoise4D(float4(nx, ny, nz, nw));
+}
+
+float fbm(float2 uv,float scale) {
+    /*如果要多次使用，要把_Frequency和_Amplitude赋值给新的，不能直接用，因为这两个是全局的*/
+    float v;
+    for (int i = 0; i < _Octaves; i++) {
+        v += _Amplitude*(SeamlessNoise(_Frequency*uv,scale)+1)*0.5;
+        _Frequency *= _Lacunarity;
+        _Amplitude *= _Gain;
+    }
+    return v;
+}
+float fbmTurbulence(float2 uv,float scale) {
+    float v;
+    for (int i = 0; i < _Octaves; i++) {
+        v += _Amplitude*abs(SeamlessNoise(_Frequency*uv,scale));
+        _Frequency *= _Lacunarity;
+        _Amplitude *= _Gain;
+    }
+    return v;
+}
+float fbmRidge(float2 uv,float scale) {
+    float v;
+    float pre=1;
+    for (int i = 0; i < _Octaves; i++) {
+        float h = abs(SeamlessNoise(_Frequency*uv,scale));
+        h = 0.9 - h;
+        h = h * h; 
+        v +=h*_Amplitude;
+        //v +=h*pre*_Amplitude;
+        pre=h;
+        _Frequency *= _Lacunarity;
+        _Amplitude *= _Gain;
+    }
+    return v;
+}
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y;
+    uint period=(int)NoiseScale;
+    float2 uv=(id.xy/TextureSize)*period;
+    //使用采样随机值的循环实现 缩放只能是整型
+    //Result[index]=(perlinNoise(uv,period)+1)*0.5;
+    //使用高纬采样实现
+    Result[index]=(SeamlessNoise(uv,NoiseScale)+1)*0.5;
+}
+
+[numthreads(8,8,1)]
+void standard (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y;
+    float2 uv=(id.xy/TextureSize);
+    Result[index] = fbm(uv,NoiseScale);
+}
+
+[numthreads(8,8,1)]
+void turbulence (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y;
+    float2 uv=(id.xy/TextureSize);
+    Result[index] = fbmTurbulence(uv,NoiseScale);
+}
+
+[numthreads(8,8,1)]
+void ridge (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y;
+    float2 uv=(id.xy/TextureSize);
+    Result[index] = fbmRidge(uv,NoiseScale);
+}

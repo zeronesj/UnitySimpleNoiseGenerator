@@ -1,0 +1,134 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+#pragma kernel standard 
+#pragma kernel turbulence 
+#pragma kernel ridge 
+
+
+RWStructuredBuffer<float> Result;
+float TextureSize;
+float NoiseScale;
+
+int _Octaves;
+float _Lacunarity;
+float _Gain;
+float _Amplitude;
+float _Frequency;
+
+float3 random3(float3 p) {
+    p = float3(dot(p, float3(127.1, 311.7, 74.7)),
+        dot(p, float3(269.5, 183.3, 246.1)),
+        dot(p, float3(113.5, 271.9, 124.6)));
+    return frac(sin(p)*43.5453123);
+}
+int3 warp3(int3 n,uint period){
+     n++;
+     return period > 0 ? n % period : n;
+}
+
+float2 random(float2 p) {
+    p = float2(dot(p, float2(127.1, 311.7)),
+        dot(p, float2(269.5, 183.3)));
+    
+    return frac(sin(p)*43758.5453123);
+}
+
+int2 warp2(int2 n,uint period){
+     n++;
+     return period > 0 ? n % period : n;
+}
+
+
+
+float worleyNoise3D(float3 uv,uint period) {
+    uv%=period;
+    int3 i = floor(uv);
+    float3 f = frac(uv);
+    float m_dist =1;
+    for (int x = -1; x < 2;x++) {
+        for (int y = -1; y < 2; y++) {
+            for(int z=-1;z<2;z++){
+                int3 neighbor = int3(x,y,z);
+                //周围的特征点
+                float3 neighborP = random3(warp3((i + neighbor),period));
+                float dist = distance(f,neighborP+ neighbor);
+                if (dist<m_dist) {
+                    //最短距离
+                    m_dist = dist;
+                }
+            }
+        }
+    }
+    
+    return m_dist;
+}
+
+float fbm(float3 uv,uint period) {
+    /*如果要多次使用，要把_Frequency和_Amplitude赋值给新的，不能直接用，因为这两个是全局的*/
+    float v;
+    for (int i = 0; i < _Octaves; i++) {
+        v += _Amplitude*worleyNoise3D(_Frequency*uv,period);
+        _Frequency *= _Lacunarity;
+        _Amplitude *= _Gain;
+    }
+    return v;
+}
+float fbmTurbulence(float3 uv,uint period) {
+    float v;
+    for (int i = 0; i < _Octaves; i++) {
+        v += _Amplitude*abs(worleyNoise3D(_Frequency*uv,period)*2-1);
+        _Frequency *= _Lacunarity;
+        _Amplitude *= _Gain;
+    }
+    return v;
+}
+float fbmRidge(float3 uv,uint period) {
+    float v;
+    float pre=1;
+    for (int i = 0; i < _Octaves; i++) {
+        float h = abs(worleyNoise3D(_Frequency*uv,period)*2-1);
+        h = 0.9 - h;
+        h = h * h; 
+        v +=h*_Amplitude;
+        v +=h*pre*_Amplitude;
+        pre=h;
+        _Frequency *= _Lacunarity;
+        _Amplitude *= _Gain;
+    }
+    return v;
+}
+[numthreads(8,8,8)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y+TextureSize*TextureSize*id.z;
+    uint period=(int)NoiseScale;
+    float3 uv=(id/TextureSize)*period;
+    Result[index]=worleyNoise3D(uv,period);
+}
+
+[numthreads(8,8,8)]
+void standard (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y+TextureSize*TextureSize*id.z;
+    uint period=(int)NoiseScale;
+    float3 uv=(id/TextureSize)*period;
+    Result[index] = fbm(uv,period);
+}
+
+[numthreads(8,8,8)]
+void turbulence (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y+TextureSize*TextureSize*id.z;
+    uint period=(int)NoiseScale;
+    float3 uv=(id/TextureSize)*period;
+    Result[index] = fbmTurbulence(uv,period);
+}
+
+[numthreads(8,8,8)]
+void ridge (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y+TextureSize*TextureSize*id.z;
+    uint period=(int)NoiseScale;
+    float3 uv=(id/TextureSize)*period;
+    Result[index] = fbmRidge(uv,period);
+}

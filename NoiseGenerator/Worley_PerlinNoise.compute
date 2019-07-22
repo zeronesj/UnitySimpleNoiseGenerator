@@ -1,0 +1,152 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+#pragma kernel standard 
+#pragma kernel turbulence 
+#pragma kernel ridge 
+
+#define PI 3.1415926
+
+RWStructuredBuffer<float> Result;
+float TextureSize;
+float NoiseScale;
+
+int _Octaves;
+float _Lacunarity;
+float _Gain;
+float _Amplitude;
+float _Frequency;
+
+float mix(float a, float b, float t) {
+    return b*t + a*(1 - t);
+}
+
+int warp(int n,uint period){
+     n++;
+     return period > 0 ? n % period : n;
+}
+
+float2 random(float2 p) {
+    p = float2(dot(p, float2(127.1, 311.7)),
+        dot(p, float2(269.5, 183.3)));
+
+    return frac(sin(p)*43758.5453123);
+}
+//perlin----------------------------------------------------
+
+float perlinNoise(float2 uv,uint period) {
+    uv%=period;
+    int2 i = floor(uv);
+    float2 f = frac(uv);
+    //为了直观 单独计算四个值
+    float value0 = dot(random(float2(warp(i.x,period),warp(i.y,period))), f - float2(0, 0));
+    float value1 = dot(random(float2(warp(i.x+1,period),warp(i.y,period))), f - float2(1, 0));
+    float value2 = dot(random(float2(warp(i.x,period),warp(i.y+1,period))), f - float2(0, 1));
+    float value3 = dot(random(float2(warp(i.x+1,period),warp(i.y+1,period))), f - float2(1, 1));
+
+    float2 u = f*f*(3.0 - 2.0*f);
+    //插值
+    return mix(mix(value0, value1,u.x), mix(value2, value3, u.x), u.y);
+}
+//------------------------------------------------------------------
+//worley------------------------------------------------------------
+
+float worleyNoise(float2 uv,uint period) {
+    uv%=period;
+    int2 i = floor(uv);
+    float2 f = frac(uv);
+    float m_dist =1;
+    for (int x = -1; x < 2;x++) {
+        for (int y = -1; y < 2; y++) {
+            
+            int2 neighbor = int2(x, y);
+            //周围的特征点
+            float2 neighborP = random(float2(warp(i.x + neighbor.x,period),warp(i.y + neighbor.y,period))) ;
+            float dist = distance(f,neighborP+ neighbor);
+            if (dist<m_dist) {
+                //最短距离
+                m_dist = dist;
+            }
+        }
+    }
+    return (1-m_dist);
+}
+//------------------------------------------------------------------
+
+float worleyPerlinNoise(float perlinNoise,float2 uv,uint period){
+    
+    float n= (1+perlinNoise)*
+    ((1.0*worleyNoise(uv,period))
+    +(0.5*worleyNoise(uv*2.0,period*2.0))
+    +(0.25*worleyNoise(uv*4.0,period*4.0)));
+    return n/4.0f;
+}
+
+float fbm(float2 uv,uint period) {
+    float v;
+    for (int i = 0; i < _Octaves; i++) {
+        v += _Amplitude*(perlinNoise(_Frequency*uv,period)*0.5+0.5);
+        _Frequency *= _Lacunarity;
+        _Amplitude *= _Gain;
+    }
+    return v;
+}
+float fbmTurbulence(float2 uv,uint period) {
+    float v;
+    for (int i = 0; i < _Octaves; i++) {
+        v += _Amplitude*abs(perlinNoise(_Frequency*uv,period));
+        _Frequency *= _Lacunarity;
+        _Amplitude *= _Gain;
+    }
+    return v;
+}
+float fbmRidge(float2 uv,uint period) {
+    float v;
+    float pre=1;
+    for (int i = 0; i < _Octaves; i++) {
+        float h = abs(perlinNoise(_Frequency*uv,period));
+        h = 0.9 - h;
+        h = h * h; 
+        v +=h*_Amplitude;
+        v +=h*pre*_Amplitude;
+        pre=h;
+        _Frequency *= _Lacunarity;
+        _Amplitude *= _Gain;
+    }
+    return v;
+}
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y;
+    uint period=(int)NoiseScale;
+    float2 uv=(id.xy/TextureSize)*period;
+    Result[index]=worleyPerlinNoise(perlinNoise(uv,period),uv,period)*0.5+0.5;
+}
+
+[numthreads(8,8,1)]
+void standard (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y;
+    uint period=(int)NoiseScale;
+    float2 uv=(id.xy/TextureSize)*period;
+    Result[index] = worleyPerlinNoise(fbm(uv,period),uv,period);
+}
+
+[numthreads(8,8,1)]
+void turbulence (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y;
+    uint period=(int)NoiseScale;
+    float2 uv=(id.xy/TextureSize)*period;
+    Result[index] = worleyPerlinNoise(fbmTurbulence(uv,period),uv,period);
+}
+
+[numthreads(8,8,1)]
+void ridge (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y;
+    uint period=(int)NoiseScale;
+    float2 uv=(id.xy/TextureSize)*period;
+    Result[index] = worleyPerlinNoise(fbmRidge(uv,period),uv,period);
+}
+

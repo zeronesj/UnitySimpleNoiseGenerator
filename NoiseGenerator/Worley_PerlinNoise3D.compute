@@ -1,0 +1,160 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+#pragma kernel standard 
+#pragma kernel turbulence 
+#pragma kernel ridge 
+
+#define PI 3.1415926
+
+RWStructuredBuffer<float> Result;
+float TextureSize;
+float NoiseScale;
+
+int _Octaves;
+float _Lacunarity;
+float _Gain;
+float _Amplitude;
+float _Frequency;
+
+float mix(float a, float b, float t) {
+    return b*t + a*(1 - t);
+}
+
+float3 random3(float3 p) {
+    p = float3(dot(p, float3(127.1, 311.7, 74.7)),
+        dot(p, float3(269.5, 183.3, 246.1)),
+        dot(p, float3(13.5, 71.9, 24.6)));
+    return frac(sin(p)*43.5453123);
+}
+
+int3 warp3(int3 n,uint period){
+     n++;
+     return period > 0 ? n % period : n;
+}
+//perlin----------------------------------------------------
+
+float perlinNoise3D(float3 uv,uint period) {
+    uv%=period;
+    float3 i = floor(uv);
+    float3 f = frac(uv);
+    
+    float value0 = dot(random3(warp3(i + float3(0, 0, 0),period)), f - float3(0, 0, 0));
+    float value1 = dot(random3(warp3(i + float3(1, 0, 0),period)), f - float3(1, 0, 0));
+    float value2 = dot(random3(warp3(i + float3(0, 1, 0),period)), f - float3(0, 1, 0));
+    float value3 = dot(random3(warp3(i + float3(1, 1, 0),period)), f - float3(1, 1, 0));
+
+
+    float value4 = dot(random3(warp3(i + float3(0, 0, 1),period)), f - float3(0, 0, 1));
+    float value5 = dot(random3(warp3(i + float3(1, 0, 1),period)), f - float3(1, 0, 1));
+    float value6 = dot(random3(warp3(i + float3(0, 1, 1),period)), f - float3(0, 1, 1));
+    float value7 = dot(random3(warp3(i + float3(1, 1, 1),period)), f - float3(1, 1, 1));
+
+    float3 u = f*f*(3.0 - 2.0*f);
+    //插值
+    float mix1= mix(mix(value0, value1,u.x), mix(value2, value3, u.x), u.y);
+    float mix2= mix(mix(value4, value5, u.x), mix(value6, value7, u.x), u.y);
+    return mix(mix1,mix2,u.z);
+}
+//------------------------------------------------------------------
+//worley------------------------------------------------------------
+
+float worleyNoise3D(float3 uv,uint period) {
+    uv%=period;
+    int3 i = floor(uv);
+    float3 f = frac(uv);
+    float m_dist =1;
+    for (int x = -1; x < 2;x++) {
+        for (int y = -1; y < 2; y++) {
+            for(int z=-1;z<2;z++){
+                int3 neighbor = int3(x,y,z);
+                //周围的特征点
+                float3 neighborP = random3(warp3((i + neighbor),period));
+                float dist = distance(f,neighborP+ neighbor);
+                if (dist<m_dist) {
+                    //最短距离
+                    m_dist = dist;
+                }
+            }
+        }
+    }
+    return 1-m_dist;
+}
+//------------------------------------------------------------------
+
+float worleyPerlinNoise(float perlinNoise,float3 uv,uint period){
+    float n= (1+perlinNoise)*
+    ((1.0*worleyNoise3D(uv,period))
+    +(0.5*worleyNoise3D(uv*2.0,period*2.0))
+    +(0.25*worleyNoise3D(uv*4.0,period*4.0)));
+    return n/4.0f;
+}
+
+float fbm(float3 uv,uint period) {
+    float v;
+    for (int i = 0; i < _Octaves; i++) {
+        v += _Amplitude*(perlinNoise3D(_Frequency*uv,period)*0.5+0.5);
+        _Frequency *= _Lacunarity;
+        _Amplitude *= _Gain;
+    }
+    return v;
+}
+float fbmTurbulence(float3 uv,uint period) {
+    float v;
+    for (int i = 0; i < _Octaves; i++) {
+        v += _Amplitude*abs(perlinNoise3D(_Frequency*uv,period));
+        _Frequency *= _Lacunarity;
+        _Amplitude *= _Gain;
+    }
+    return v;
+}
+float fbmRidge(float3 uv,uint period) {
+    float v;
+    float pre=1;
+    for (int i = 0; i < _Octaves; i++) {
+        float h = abs(perlinNoise3D(_Frequency*uv,period));
+        h = 0.9 - h;
+        h = h * h; 
+        v +=h*_Amplitude;
+        v +=h*pre*_Amplitude;
+        pre=h;
+        _Frequency *= _Lacunarity;
+        _Amplitude *= _Gain;
+    }
+    return v;
+}
+[numthreads(8,8,8)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y+TextureSize*TextureSize*id.z;
+    uint period=(int)NoiseScale;
+    float3 uv=(id/TextureSize)*period;
+    Result[index]=worleyPerlinNoise(perlinNoise3D(uv,period),uv,period);
+}
+
+[numthreads(8,8,8)]
+void standard (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y+TextureSize*TextureSize*id.z;
+    uint period=(int)NoiseScale;
+    float3 uv=(id/TextureSize)*period;
+    Result[index] = worleyPerlinNoise(fbm(uv,period),uv,period);
+}
+
+[numthreads(8,8,8)]
+void turbulence (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y+TextureSize*TextureSize*id.z;
+    uint period=(int)NoiseScale;
+    float3 uv=(id/TextureSize)*period;
+    Result[index] = worleyPerlinNoise(fbmTurbulence(uv,period),uv,period);
+}
+
+[numthreads(8,8,8)]
+void ridge (uint3 id : SV_DispatchThreadID)
+{
+    int index=id.x+TextureSize*id.y+TextureSize*TextureSize*id.z;
+    uint period=(int)NoiseScale;
+    float3 uv=(id/TextureSize)*period;
+    Result[index] = worleyPerlinNoise(fbmRidge(uv,period),uv,period);
+}
+
